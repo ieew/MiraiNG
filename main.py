@@ -207,7 +207,7 @@ class Update:
             self.name_cache = file
             request.urlretrieve(file.date_url, filename=f"{self.config.jar_lib}\\{os.path.basename(file.date_url)}", reporthook=self.print_down_info)  # noqa
             print()
-        except:
+        except:  # noqa
             traceback.print_exc()
 
     def update(self):
@@ -224,10 +224,10 @@ class Update:
                         log.warning(f"存在重复的 {i.name}, 已自动删除")
                         i.unlink()
                     elif dat.version < dat.cloud_version:
-                        log.info(f"本地 {dat.name}({dat.version}) 云端 {dat.name}({dat.cloud_version}) | 可更新")
+                        log.info(f"本地 {dat.name}({dat.version}) 云端 {dat.name}({dat.cloud_version}) | 可更新")  # noqa
                         cache[dat.name].append(dat)
                     else:
-                        log.info(f"本地 {dat.name}({dat.version}) 云端 {dat.name}({dat.cloud_version}) | 已是最新")
+                        log.info(f"本地 {dat.name}({dat.version}) 云端 {dat.name}({dat.cloud_version}) | 已是最新")  # noqa
                         cache[dat.name].append(None)
         return cache
 
@@ -249,9 +249,6 @@ class Update:
                 self.download(f)
                 f.path.unlink()
 
-        # url = ""
-        # request.urlretrieve(url, filename="xxx.jar", reporthook=print_down_info)
-
     def __call__(self):
         if self.config.update:
             data = self.update()
@@ -267,6 +264,7 @@ class Main:
 
     def __call__(self):
         log.info("MiraiRun...")
+        os.system(f'java -cp "{self.config.jar_lib}/*" "net.mamoe.mirai.console.terminal.MiraiConsoleTerminalLoader"')
 
 
 config: Optional[Config] = None
