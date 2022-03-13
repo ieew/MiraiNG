@@ -1,4 +1,4 @@
-from typing import Dict, Optional, Tuple, Literal
+from typing import Dict, List, Optional, Tuple, Literal, Union
 from urllib import request
 import xml.sax
 from xml.sax.xmlreader import AttributesImpl
@@ -16,6 +16,42 @@ def Request(
     *args, **kwargs
 ) -> request.Request:
     return request.Request(url, headers=headers, data=data, *args, **kwargs)
+
+
+class file:
+    def __init__(self, **kwargs) -> None:
+        """
+        :parse version: 版本号
+        :param name: 文件名
+        :param date_url: 下载链接
+        :param cloud_version: 云端版本号
+        :param path: 本地文件地址
+        """
+        self.version: str = None
+        self.name: str = None
+        self.date_url: str = None
+        self.cloud_version: str = None
+        self.path: Path = None
+        self.Handler: MovieHandler = None
+
+        for k, v in kwargs.items():
+            if k in self.__dict__:
+                self.__dict__[k] = v
+
+    def __str__(self) -> str:
+        return str(self.__dict__)
+
+    def __eq__(self, other: "file"):
+        if all([
+            other.version == self.version,
+            other.name == self.name
+        ]):
+            return True
+        else:
+            return False
+
+    def dict(self) -> dict:
+        return self.__dict__
 
 
 class MovieHandler(xml.sax.ContentHandler):
@@ -90,7 +126,7 @@ class Config:
             self.__dict__[k] = v
 
     @property
-    def data(self) -> dict:
+    def data(self) -> Dict[str, Union[Dict[str, str], List[str]]]:
         return self.__data
 
     @property
@@ -115,16 +151,8 @@ class Update:
         config: Optional[Config] = None
     ) -> None:
         self.config = config or Config()
-        self.date_url: Dict[str, Optional[Tuple[MovieHandler, str]]] = {
-            "mirai-console": None,
-            "mirai-console-terminal": None,
-            "mirai-core-all": None
-        }
-        self.file_version = {
-            "mirai-console": None,
-            "mirai-console-terminal": None,
-            "mirai-core-all": None
-        }
+        self.need_to_update = []
+        self.name_cache = ""
 
     def get_version(self, jar_name) -> MovieHandler:
         response = request.urlopen(
@@ -134,7 +162,7 @@ class Update:
         xml.sax.parseString(response.read().decode(), Handler)
         return Handler
 
-    def get_url(self, Handler: MovieHandler) -> Tuple[str, str]:
+    def get_file_url(self, Handler: MovieHandler) -> Tuple[str, str]:
         name = Handler.artifactId
         version = Handler.__dict__[self.config.versioning]
         return f"{self.config.source_url}/{name}/{version}/{name}-{version}-all.jar"  # noqa
@@ -142,73 +170,94 @@ class Update:
     def get_metadata_url(self, name) -> str:
         return f"{self.config.data.get('source').get(self.config.source)}/{name}/maven-metadata.xml"  # noqa
 
-    def record_local_info(self, name, version):
-        if self.file_version[name] is None:
-            log.debug(f"本地 {name} 版本号: {version}")
-            self.file_version[name] = version
-        else:
-            log.warning(f"存在多余的 {name}")
+    def print_down_info(self, block_num, block_size, total_size):
+        if (per := 100.0 * block_num * block_size / total_size) > 100:
+            per = 100
+        # print('%.2f%%' % per, end=" ")
+        a = str('=' * int(per * 0.5))
+        b = str(' ' * int(100 * 0.5 - per * 0.5))
+        c = "%.2f%%" % per
+        print(f"\r下载 {self.name_cache.name}({self.name_cache.cloud_version}): [{a}{b}] {c}", end="")  # noqa
 
     def zip_read(self, file: Path) -> Tuple[Optional[str], Optional[str]]:
         with zipfile.ZipFile(file, "r") as zip:
             manifest = zip.read("META-INF/MANIFEST.MF").decode()
-            version = re.search(r"(Implementation-Version)(:\s?)([0-9\.]{1,12})", manifest)  # noqa
+            version = re.search(r"(Implementation-Version)(:\s?)([0-9\.\-a-zA-Z]{1,12})", manifest)  # noqa
             title = re.search(r"(Implementation-Title)(:\s?)([a-z\-]{5,25})", manifest)  # noqa
-            if title is not None and version is not None:
-                return title.group(3), version.group(3)
-            else:
+            if title is None and version is None:
                 return None, None
+            else:
+                return title.group(3), version.group(3)
 
-    def read_mirai_version(self):
-        with Path(self.config.jar_lib) as f:
-            for i in f.iterdir():
-                try:
-                    title, version = self.zip_read(i)
-                    if None not in [title, version] and title in self.file_version:  # noqa
-                        self.record_local_info(title, version)
-                except OSError:
-                    log.warning(f"文件 {i.resolve()} 已损坏，将会被直接删除")
-                    i.unlink()
-                except zipfile.BadZipFile:
-                    log.warn(f"忽略文件: {i.resolve()}")
+    def read_local_version(self, files: Path) -> file:
+        title, version = self.zip_read(files)
+        if None not in [title, version] and title in self.config.jar_list:
+            return file(version=version, name=title, path=files.resolve())
 
-    def get_cloud_version(self):
-        log.info("获取云端版本信息...")
-        if self.config.update:
-            for i in self.config.jar_list:
-                Handler = self.get_version(i)
-                log.debug(
-                    "云端 "
-                    f"{Handler.artifactId} 版本号: "
-                    f"{Handler.__dict__[self.config.versioning]}"
-                )
-                url = self.get_url(Handler)
-                if i in self.date_url:
-                    self.date_url[i] = (Handler, url)
+    def get_cloud_version(self, name: file) -> file:
+        Handler = self.get_version(name.name)
+        name.date_url = self.get_file_url(Handler)
+        name.cloud_version = Handler.__dict__[self.config.versioning]
+        name.Handler = Handler
+        return name
+
+    def download(self, file: file) -> bool:
+        import traceback
+        try:
+            self.name_cache = file
+            request.urlretrieve(file.date_url, filename=f"{self.config.jar_lib}\\{os.path.basename(file.date_url)}", reporthook=self.print_down_info)  # noqa
+            print()
+        except:
+            traceback.print_exc()
 
     def update(self):
         """更新检查器"""
-        self.get_cloud_version()
-        self.read_mirai_version()
-        # print(self.file_version)
-        # print(self.date_url)
-        file_version = {k: v or "0.0.0" for k, v in self.file_version.items()}
-        for i in self.config.jar_list:
-            local = file_version[i]
-            cloud = self.date_url[i][0].__dict__[self.config.versioning]
-            if local < cloud:
-                log.info(f"本地: {i}({local}) 云端: {i}({cloud}) | 可更新")
+        cache = {i: [] for i in self.config.jar_list}
+        with Path(self.config.jar_lib) as f:
+            for i in f.iterdir():
+                if i.name.endswith(".jar"):
+                    log.debug(f"读取文件的版本信息: ({i.absolute()})")
+                    dat = self.read_local_version(i)
+                    log.debug(f"读取 {dat.name} 云端版本信息...")
+                    self.get_cloud_version(dat)
+                    if dat in cache[dat.name]:
+                        log.warning(f"存在重复的 {i.name}, 已自动删除")
+                        i.unlink()
+                    elif dat.version < dat.cloud_version:
+                        log.info(f"本地 {dat.name}({dat.version}) 云端 {dat.name}({dat.cloud_version}) | 可更新")
+                        cache[dat.name].append(dat)
+                    else:
+                        log.info(f"本地 {dat.name}({dat.version}) 云端 {dat.name}({dat.cloud_version}) | 已是最新")
+                        cache[dat.name].append(None)
+        return cache
 
-    def upgrade(self):
+    def upgrade(self, date: Dict[str, List[file]]):
         """更新执行器"""
-        log.info("更新 Mirai 文件...")
+        for name, dat in date.items():
+            if not len(dat):
+                log.info(f"缺失 {name} 即将开始下载")
+                dat = file(name=name)
+                self.get_cloud_version(dat)
+                self.download(dat)
+            elif len(dat) > 1:
+                log.error(f"存在重复的 {name} ,请删除其中一个，而后再重新运行本程序。")
+                print(dat)
+                exit(1)
+            elif None not in dat:
+                log.info(f"开始更新 {name} ...")
+                f = dat.pop()
+                self.download(f)
+                f.path.unlink()
+
+        # url = ""
+        # request.urlretrieve(url, filename="xxx.jar", reporthook=print_down_info)
 
     def __call__(self):
         if self.config.update:
-            self.update()
+            data = self.update()
 
         if self.config.upgrade:
-            self.upgrade()
+            self.upgrade(data)
 
 
 class Main:
@@ -222,7 +271,7 @@ class Main:
 
 config: Optional[Config] = None
 update: Optional[Update] = None
-mirai_ok: Optional[Main] = None
+MiraiNG: Optional[Main] = None
 headers: dict = {}
 
 log: logging.Logger = logging.getLogger("MiraiNG")
@@ -237,7 +286,7 @@ log.addHandler(log_hander)
 
 
 def init(header={}, **kwargs):
-    global config, update, mirai_ok, headers
+    global config, update, MiraiNG, headers
     config = Config(**kwargs)
 
     for path in [
@@ -252,14 +301,14 @@ def init(header={}, **kwargs):
                 f.mkdir()
 
     update = Update(config=config)
-    mirai_ok = Main(config=config)
+    MiraiNG = Main(config=config)
     headers = header
 
 
 def main():
     os.chdir(config.mirai_lib)
     update()
-    mirai_ok()
+    MiraiNG()
 
 
 if __name__ == "__main__":
