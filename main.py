@@ -42,7 +42,7 @@ class file:
         return str(self.__dict__)
 
     def __eq__(self, other: "file"):
-        if all([
+        if other is not None and all([
             other.version == self.version,
             other.name == self.name
         ]):
